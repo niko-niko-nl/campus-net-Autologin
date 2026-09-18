@@ -1,0 +1,34 @@
+# =============================================================================
+#  .gitattributes —— 显式声明行尾，不依赖各人本地的 core.autocrlf
+# =============================================================================
+#  为什么需要：
+#    本项目只面向 Windows。批处理（.bat）对行尾敏感，LF 行尾在部分环境下会
+#    出问题（尤其是含 goto/label 的脚本）。如果只靠 core.autocrlf，那是个
+#    本地设置 —— 克隆的人没配、或者配成 false，拿到手的就是 LF 的 .bat。
+#    在这里写死，仓库层面就确定了。
+#
+#  仓储策略：索引里统一存 LF，检出时按下面的规则转换成本地行尾。
+# =============================================================================
+
+* text=auto
+
+# --- 对行尾敏感的 Windows 脚本：强制 CRLF ---
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.vbs   text eol=crlf
+
+# --- Windows 源码 / 配置：统一 CRLF ---
+*.ps1   text eol=crlf
+*.psm1  text eol=crlf
+*.cs    text eol=crlf
+
+# --- 二进制：不做任何转换 ---
+*.exe   binary
+*.ico   binary
+*.png   binary
+*.jpg   binary
+*.zip   binary
+
+# --- 让 GitHub 的语言统计更准确 ---
+*.ps1   linguist-language=PowerShell
+*.vbs   linguist-language=VBScript

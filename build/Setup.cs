@@ -11,6 +11,9 @@
 //    --install --user U --pass-stdin [--service S] [--interval N]
 //        （密码从 stdin 读一行；故意不提供 --pass —— 命令行参数会被同机
 //          其他用户在进程列表里看到）
+//    --install ... --install-dir D --task-name T
+//        （把释放目录、配置、计划任务全指到别处，不碰用户的真实安装。
+//          自测必须用这两个参数）
 //    --ensure | --status | --gamecheck | --uninstall [--purge] | --selftest | --extract-only
 // ===========================================================================
 using System;
@@ -41,9 +44,20 @@ namespace CampusNetSetup
     {
         public const string TaskName = "CampusNet-AutoLogin";
 
+        // 所有路径都由 Root 派生。默认是 %LOCALAPPDATA%\CampusNet。
+        //
+        // OverrideRoot 是给自动化与自测用的逃生门：设了它，释放文件、写配置、
+        // 找脚本全部改到指定目录。没有这个口子时，`--install` 无论如何都会
+        // 写到用户的真实安装里 —— 开发过程中就这么把真实 config.json 覆盖过两次。
+        public static string OverrideRoot = null;
+
         public static string Root
         {
-            get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CampusNet"); }
+            get
+            {
+                if (!string.IsNullOrEmpty(OverrideRoot)) return OverrideRoot;
+                return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CampusNet");
+            }
         }
         public static string ConfigPath { get { return Path.Combine(Root, "config.json"); } }
         public static string LogPath { get { return Path.Combine(Root, "login.log"); } }
@@ -374,9 +388,17 @@ namespace CampusNetSetup
             }
         }
 
-        public static int RunInstall(int intervalMinutes, out string output)
+        public static int RunInstall(int intervalMinutes, out string output, string installDir = null, string taskName = null)
         {
-            string args = "-UseExistingConfig -Force -TaskName \"" + TaskName + "\" -IntervalMinutes " + intervalMinutes;
+            // taskName / installDir 是给自动化与自测用的：把任务名和目标目录都指到
+            // 临时位置，就不会碰到用户真实的安装。踩过两次坑（测试把真实 config.json
+            // 覆盖了），所以这两个口子必须留着。
+            string tn = string.IsNullOrEmpty(taskName) ? TaskName : taskName;
+            string args = "-UseExistingConfig -Force -TaskName \"" + tn + "\" -IntervalMinutes " + intervalMinutes;
+            if (!string.IsNullOrEmpty(installDir))
+            {
+                args += " -InstallDir \"" + installDir.Replace("\"", "") + "\"";
+            }
             return RunScript(InstallPs1, args, out output, 120000);
         }
 
@@ -893,6 +915,11 @@ namespace CampusNetSetup
 
                 if (HasFlag(args, "--install"))
                 {
+                    // --install-dir 必须在 Extract/WriteConfig 之前生效，否则
+                    // 释放的文件和配置都会落到默认目录（用户的真实安装）里。
+                    string installDir = ArgValue(args, "--install-dir", "");
+                    if (installDir.Length > 0) App.OverrideRoot = installDir;
+
                     App.Extract();
                     string user = ArgValue(args, "--user", "");
                     string service = ArgValue(args, "--service", "");
@@ -940,7 +967,9 @@ namespace CampusNetSetup
 
                     App.WriteConfig(user, pass, service, App.HasConfig, guard, games);
                     string o1;
-                    int c1 = App.RunInstall(interval, out o1);
+                    int c1 = App.RunInstall(interval, out o1,
+                                            ArgValue(args, "--install-dir", ""),
+                                            ArgValue(args, "--task-name", ""));
                     Console.Write(o1);
                     if (c1 != 0) return c1;
                     string o2;

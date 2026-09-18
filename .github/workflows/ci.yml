@@ -1,0 +1,100 @@
+# =============================================================================
+#  GitHub Actions CI
+# =============================================================================
+#  每次 push / PR 做四件事：
+#    1. 校验所有 .ps1 / .cs 都带 UTF-8 BOM（本项目自己的硬性规则）
+#    2. 语法检查全部 PowerShell 脚本
+#    3. RSA 实现回归（离线参考实现，40 个向量 + 空串 + 非 ASCII 拒绝）
+#    4. Pester 单元测试（配置默认值、联网判定、名单归一化、双重编码）
+#
+#  全部跑在 windows-latest 上，用系统自带的 Windows PowerShell 5.1 +
+#  内置的 Pester 3.4.0，和用户机器上的环境一致。
+#  Node.js 由 actions/setup-node 提供（RSA 参考实现需要它）。
+# =============================================================================
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Show environment
+        shell: pwsh
+        run: |
+          $PSVersionTable.PSVersion
+          node --version
+          (Get-Module -ListAvailable Pester | Select-Object -First 1).Version
+
+      # --- 1. UTF-8 BOM 规则 -------------------------------------------------
+      # 项目要求：所有含中文的 .ps1 / .cs 必须带 BOM。
+      # Windows PowerShell 5.1 会把无 BOM 的文件按 ANSI/GBK 读，中文乱码甚至
+      # 语法报错 —— 这个坑在开发中出现过多次，所以放进 CI 卡住。
+      - name: Check UTF-8 BOM
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bad = @()
+          $files = Get-ChildItem -Recurse -File -Include *.ps1, *.psm1, *.cs |
+                   Where-Object { $_.Name -ne 'Setup.generated.cs' }
+          foreach ($f in $files) {
+            $b = [System.IO.File]::ReadAllBytes($f.FullName)
+            if ($b.Length -lt 3 -or $b[0] -ne 0xEF -or $b[1] -ne 0xBB -or $b[2] -ne 0xBF) {
+              $bad += $f.FullName
+            }
+          }
+          if ($bad.Count -gt 0) {
+            Write-Host '[X] These files are missing a UTF-8 BOM:' -ForegroundColor Red
+            $bad | ForEach-Object { Write-Host "    $_" }
+            Write-Host ''
+            Write-Host 'Fix locally with: powershell -ExecutionPolicy Bypass -File tools\fix-encoding.ps1'
+            exit 1
+          }
+          Write-Host ("[OK] BOM present in {0} file(s)" -f $files.Count) -ForegroundColor Green
+
+      # --- 2. PowerShell 语法检查 -------------------------------------------
+      - name: PowerShell syntax check
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $failed = 0
+          foreach ($f in (Get-ChildItem -Recurse -File -Include *.ps1, *.psm1)) {
+            $err = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$err)
+            if ($err.Count -gt 0) {
+              $failed++
+              Write-Host ("[X] " + $f.FullName) -ForegroundColor Red
+              $err | Select-Object -First 3 | ForEach-Object {
+                Write-Host ("      line {0}: {1}" -f $_.Extent.StartLineNumber, $_.Message)
+              }
+            }
+          }
+          if ($failed -gt 0) { exit 1 }
+          Write-Host '[OK] All PowerShell files parse' -ForegroundColor Green
+
+      # --- 3. RSA 回归 ------------------------------------------------------
+      # 第 1 层（离线参考实现）必须全过。
+      # 第 2 层需要门户的 security.js —— 那是第三方文件，仓库不分发，
+      # 所以 CI 上会自动跳过，这是预期行为。
+      - name: RSA regression
+        shell: cmd
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\test-rsa.ps1
+
+      # --- 4. Pester 单元测试 ------------------------------------------------
+      - name: Pester unit tests
+        shell: cmd
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\Run-Tests.ps1
