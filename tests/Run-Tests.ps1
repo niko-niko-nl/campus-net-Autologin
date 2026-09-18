@@ -31,7 +31,19 @@ $params = @{
     Path     = $here
     PassThru = $true
 }
-if ($Detailed) { $params['Show'] = 'All' }
+if ($Detailed) {
+    # 这个参数名三个大版本各不一样，实测：
+    #   Pester 3.4.0（Windows 自带）两个都没有 —— 它的默认输出本来就会逐条
+    #                列出用例，所以这里什么都不用加（加了必炸，见下）
+    #   Pester 4.x   有 -Show All
+    #   Pester 5.x   有 -Output Detailed，而且不认 -Show
+    # 之前写死 -Show，在 3.4 和 5.x 上都会报
+    # "A parameter cannot be found that matches parameter name 'Show'"。
+    # CI 不带 -Detailed，所以一直没暴露。
+    $major = [int]$pester.Version.Major
+    if ($major -ge 5) { $params['Output'] = 'Detailed' }
+    elseif ($major -ge 4) { $params['Show'] = 'All' }
+}
 
 $result = Invoke-Pester @params
 

@@ -22,10 +22,11 @@ tools\
 build\                   可选的 GUI 安装器（本地编译，不随仓库分发）
   Setup.cs  build.ps1
 tests\
-  CampusNet.Tests.ps1    单元测试（20 项）
+  CampusNet.Tests.ps1    单元测试（40 项：配置 / 联网判定 / RSA / 门户地址抓取 / 登录流程）
+  GameGuardVbs.Tests.ps1 run-hidden.vbs 第一层游戏守护的 smoke 测试
   Assertions.ps1         跟 Pester 版本无关的断言助手
   Run-Tests.ps1          测试入口
-.github\workflows\ci.yml GitHub Actions：BOM / 语法 / RSA 回归 / 单测
+.github\workflows\ci.yml GitHub Actions：BOM / 语法 / RSA 回归 / 单测 / 编译 GUI
 ```
 
 ## 跑测试
@@ -34,11 +35,16 @@ tests\
 # 单元测试
 powershell -ExecutionPolicy Bypass -File .\tests\Run-Tests.ps1
 
+# 带上每个用例的名字（Pester 5 上以前会报参数错，见下面「Pester 版本」那节）
+powershell -ExecutionPolicy Bypass -File .\tests\Run-Tests.ps1 -Detailed
+
 # RSA 回归（要 Node.js）
 powershell -ExecutionPolicy Bypass -File .\tools\test-rsa.ps1
 ```
 
-CI 每次 push 和 PR 都会跑这四项，四个步骤写在 `.github\workflows\ci.yml` 里。
+CI 每次 push 和 PR 都会跑这些，步骤写在 `.github\workflows\ci.yml` 里。最后一步是
+`build\build.ps1` 编译 GUI —— `Setup.cs` 是仓库里最大的一块代码，之前只有「我本地编过」
+这个口头保证，编一遍成本极低，就顺手放进 CI 了。产物丢在 RUNNER_TEMP 里，不进仓库。
 
 ## 协议细节
 
@@ -111,6 +117,22 @@ CI 每次 push 和 PR 都会跑这四项，四个步骤写在 `.github\workflows
 被测函数必须在每个 `Describe` 的 `BeforeAll` 里 dot-source，不能写在文件顶层。Pester 5 的 `It` 跑在另一个作用域，顶层 dot-source 的函数在 `It` 里会 `CommandNotFoundException`。
 
 `Describe` 体里直接赋值的变量，`It` 里拿不到，得一律放进 `BeforeAll`。
+
+还有几个已经踩过的坑：
+
+`Mock` 的 body 里只写字面量，别引用外层变量或外层函数。两个版本下 mock 执行时的作用域不完全一样，引用外层东西容易踩空。要改配置就在 `It` 里用 `$cfgBase.PSObject.Copy()` 派生一份再改字段。
+
+测试里别去取返回对象上可能不存在的属性。`CampusNet.ps1` 开头有 `Set-StrictMode -Version 2.0`，dot-source 之后对测试作用域同样生效，取一个不存在的属性会直接抛 `PropertyNotFoundException`。（这条不是纯测试问题：补 `Invoke-CnLogin` 单测时正是它暴露出主脚本里 `$pageInfo.validCodeUrl` 的真实 bug —— 门户不返回这个字段时整个登录流程会以「运行错误」结束。已改成走 `Get-JsonValue`。）
+
+`Run-Tests.ps1 -Detailed` 这个开关在三个大版本上参数名各不相同：Pester 3.4 根本没有（默认输出本来就逐条列用例）、4.x 是 `-Show All`、5.x 是 `-Output Detailed` 且不认 `-Show`。写死一个必然在另一个版本上报「找不到参数」，CI 不带 `-Detailed` 所以不容易发现。
+
+## run-hidden.vbs 怎么测
+
+第一层游戏守护写在 VBS 里，没有单元测试框架可用，所以是 smoke 测法（`tests\GameGuardVbs.Tests.ps1`）：把 `run-hidden.vbs` 复制到临时目录，放一个 `gameguard.lst`，再放一个「诱饵」`CampusNet.ps1` —— 守护一旦失效，VBS 会把诱饵拉起来，诱饵就写下标记文件。断言标记不出现，比去数 `powershell.exe` 进程数可靠：进程可能起来就退了，抓不到。
+
+名单里放的是跑测试的进程自己的名字（`powershell` / `pwsh`），它在本地和 CI 上都一定在跑。别用 `explorer.exe`，CI runner 上未必有。
+
+还有一个反向对照：名单里填一个不存在的进程名，诱饵必须被拉起来。少了这一步，`cscript` 根本没跑成功时测试也会「通过」。
 
 ## UTF-8 BOM
 

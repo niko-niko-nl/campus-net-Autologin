@@ -99,3 +99,18 @@ jobs:
       - name: Pester unit tests
         shell: cmd
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\Run-Tests.ps1
+
+      # --- 5. 编译 GUI -------------------------------------------------------
+      #  build\Setup.cs 是仓库里最大的一块代码，但以前只有「我本地编过」这个
+      #  口头保证。windows-latest 自带 .NET Framework 的 csc.exe，编译一遍
+      #  成本极低，顺手把它兜住。产物丢到 RUNNER_TEMP，不留在仓库里。
+      - name: Build GUI installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:RUNNER_TEMP 'CampusNet-Setup.exe'
+          powershell -NoProfile -ExecutionPolicy Bypass -File build\build.ps1 -OutFile $out
+          if ($LASTEXITCODE -ne 0) { throw "build.ps1 退出码 $LASTEXITCODE" }
+          $f = Get-Item -LiteralPath $out
+          if ($f.Length -lt 100KB) { throw "产物只有 $($f.Length) 字节，不像编译成功" }
+          Write-Host ("[OK] CampusNet-Setup.exe {0:N0} B" -f $f.Length) -ForegroundColor Green

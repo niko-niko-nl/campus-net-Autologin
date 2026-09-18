@@ -457,8 +457,13 @@ function Invoke-CnLogin {
     try { $pageInfo = $piResp.Body | ConvertFrom-Json }
     catch { return [pscustomobject]@{ Success = $false; Message = "pageInfo 返回的不是 JSON：$($piResp.Body.Substring(0,[Math]::Min(200,$piResp.Body.Length)))"; Fatal = $false } }
 
-    if ($pageInfo.validCodeUrl) {
-        Write-CnLog "门户要求图形验证码：$($pageInfo.validCodeUrl)" 'WARN'
+    # 必须用 Get-JsonValue 取：Set-StrictMode -Version 2.0 下直接写
+    # $pageInfo.validCodeUrl，一旦门户没返回这个字段就抛
+    # PropertyNotFoundException，整个登录流程会以「运行错误」结束。
+    # 补 Invoke-CnLogin 单测时就是这么第一次撞上的。
+    $validCodeUrl = [string](Get-JsonValue $pageInfo 'validCodeUrl' '')
+    if ($validCodeUrl) {
+        Write-CnLog "门户要求图形验证码：$validCodeUrl" 'WARN'
         return [pscustomobject]@{ Success = $false; Message = '该门户开启了图形验证码，脚本无法自动登录，请先在浏览器里登录一次或联系网管关闭验证码'; Fatal = $true }
     }
 
