@@ -1,0 +1,29 @@
+# ===========================================================================
+#  .gitignore —— 这个仓库只放源码，不放任何个人数据 / 构建产物
+# ===========================================================================
+
+# ---- 个人数据：绝对不能提交 ----
+# config.json 含你的账号 + DPAPI 加密后的密码（虽然加密了，但泄露总归不好）
+config.json
+# 运行日志含账号、内网 IP、MAC，以及门户地址
+login.log
+login.log.*
+# 游戏守护名单是 config.json 派生的，同样别提交
+gameguard.lst
+
+# ---- 第三方文件：由 tools\test-rsa.ps1 自动从你自己的门户下载 ----
+tools/security.js
+
+# ---- 构建产物 ----
+*.exe
+build/Setup.generated.cs
+build/app.ico
+
+# ---- 杂项 ----
+*.tmp
+*.bak
+*.swp
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
