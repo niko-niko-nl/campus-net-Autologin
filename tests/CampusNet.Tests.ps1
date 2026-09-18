@@ -466,3 +466,150 @@ Describe 'Invoke-CnLogin 登录流程' {
         Assert-NotMatch $r.LoginBody 'password=pw123456'
     }
 }
+
+Describe 'Invoke-CnEnsure 主链路' {
+
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'CampusNet.ps1')
+        . (Join-Path $PSScriptRoot 'Assertions.ps1')
+        Mock Write-CnLog { }
+        # 真等就太慢了（登录成功后还有一句硬编码的 Start-Sleep 2），挡掉并计数
+        Mock Start-Sleep { $global:cnSleepCalls++ }
+
+        # 状态用 $global: 传：mock 的 body 和 It 不在同一个作用域，普通变量在
+        # Pester 3.4 / 5.x 下解析结果不一样，$global: 一定拿得到。用 Queue 是
+        # 为了「第几次调用返回什么」这种序列，同时又不用自己处理数组越界。
+        $global:cnGameHit     = $null
+        $global:cnOnlineQueue = New-Object System.Collections.Queue
+        $global:cnLoginQueue  = New-Object System.Collections.Queue
+        $global:cnOnlineCalls = 0
+        $global:cnLoginCalls  = 0
+        $global:cnSleepCalls  = 0
+
+        Mock Test-CnGameRunning { $global:cnGameHit }
+
+        Mock Test-CnOnline {
+            $global:cnOnlineCalls++
+            if ($global:cnOnlineQueue.Count -gt 0) { return $global:cnOnlineQueue.Dequeue() }
+            return [pscustomobject]@{ Online = $false; PortalUrl = 'http://10.0.0.1/eportal/index.jsp?wlanuserip=abc' }
+        }
+
+        Mock Invoke-CnLogin {
+            $global:cnLoginCalls++
+            if ($global:cnLoginQueue.Count -gt 0) { return $global:cnLoginQueue.Dequeue() }
+            return [pscustomobject]@{ Success = $false; Message = '队列里没准备返回值'; Fatal = $false }
+        }
+
+        $cfgBase = [pscustomobject]@{
+            userId                      = 'student1'
+            password                    = 'pw123456'
+            passwordEncrypted           = ''
+            service                     = ''
+            portalHost                  = '10.0.0.1'
+            checkUrls                   = @('http://probe.invalid/generate_204')
+            logFile                     = ''
+            retryCount                  = 3
+            retryDelaySec               = 0
+            timeoutSec                  = 5
+            treatAlreadyOnlineAsSuccess = $true
+            gameGuard                   = $true
+            gameProcesses               = @('valorant')
+        }
+
+        $online  = [pscustomobject]@{ Online = $true;  PortalUrl = $null }
+        $offline = [pscustomobject]@{ Online = $false; PortalUrl = 'http://10.0.0.1/eportal/index.jsp?wlanuserip=abc' }
+        $ok      = [pscustomobject]@{ Success = $true;  Message = 'ok' }
+        $softFail = [pscustomobject]@{ Success = $false; Message = '用户名或密码错误'; Fatal = $false }
+        $fatalFail = [pscustomobject]@{ Success = $false; Message = '无法获取认证门户地址（未检测到 NAS 重定向）'; Fatal = $true }
+    }
+
+    AfterAll {
+        foreach ($n in 'cnGameHit', 'cnOnlineQueue', 'cnLoginQueue', 'cnOnlineCalls', 'cnLoginCalls', 'cnSleepCalls') {
+            Remove-Variable -Name $n -Scope Global -ErrorAction SilentlyContinue
+        }
+    }
+
+    It '游戏守护命中 => 直接返回 0，一个网络请求都不发' {
+        $global:cnGameHit = 'valorant'
+        $global:cnOnlineCalls = 0
+        $global:cnLoginCalls = 0
+
+        Assert-Equal (Invoke-CnEnsure -Cfg $cfgBase) 0
+        Assert-Equal $global:cnOnlineCalls 0
+        Assert-Equal $global:cnLoginCalls 0
+    }
+
+    It '已在线 => 返回 0，完全不碰登录' {
+        $global:cnGameHit = $null
+        $global:cnOnlineQueue.Enqueue($online)
+        $global:cnLoginCalls = 0
+
+        Assert-Equal (Invoke-CnEnsure -Cfg $cfgBase) 0
+        Assert-Equal $global:cnLoginCalls 0
+    }
+
+    It '掉线 -> 登录成功 -> 复检在线 => 返回 0' {
+        $global:cnGameHit = $null
+        $global:cnOnlineQueue.Enqueue($offline)
+        $global:cnOnlineQueue.Enqueue($online)     # 登录成功之后的复检
+        $global:cnLoginQueue.Enqueue($ok)
+        $global:cnLoginCalls = 0
+
+        Assert-Equal (Invoke-CnEnsure -Cfg $cfgBase) 0
+        Assert-Equal $global:cnLoginCalls 1
+    }
+
+    It '登录接口说成功但复检还是离线 => 继续重试，耗尽后返回 1' {
+        $global:cnGameHit = $null
+        $global:cnOnlineQueue.Enqueue($offline); $global:cnOnlineQueue.Enqueue($offline)
+        $global:cnOnlineQueue.Enqueue($offline); $global:cnOnlineQueue.Enqueue($offline)
+        $global:cnOnlineQueue.Enqueue($offline); $global:cnOnlineQueue.Enqueue($offline)
+        $global:cnLoginQueue.Enqueue($ok); $global:cnLoginQueue.Enqueue($ok); $global:cnLoginQueue.Enqueue($ok)
+        $global:cnLoginCalls = 0
+
+        Assert-Equal (Invoke-CnEnsure -Cfg $cfgBase) 1
+        Assert-Equal $global:cnLoginCalls 3        # retryCount
+    }
+
+    It '登录失败且 Fatal => 立刻返回 2，不重试' {
+        $global:cnGameHit = $null
+        $global:cnOnlineQueue.Enqueue($offline)
+        $global:cnOnlineQueue.Enqueue($offline)
+        $global:cnOnlineQueue.Enqueue($offline)
+        $global:cnLoginQueue.Enqueue($fatalFail)
+        $global:cnLoginCalls = 0
+        $global:cnSleepCalls = 0
+
+        Assert-Equal (Invoke-CnEnsure -Cfg $cfgBase) 2
+        Assert-Equal $global:cnLoginCalls 1
+        Assert-Equal $global:cnSleepCalls 0
+    }
+
+    It '登录失败但不是 Fatal => 重试满 retryCount 次后返回 1' {
+        $global:cnGameHit = $null
+        $global:cnOnlineQueue.Enqueue($offline)
+        $global:cnOnlineQueue.Enqueue($offline)
+        $global:cnOnlineQueue.Enqueue($offline)
+        $global:cnLoginQueue.Enqueue($softFail)
+        $global:cnLoginQueue.Enqueue($softFail)
+        $global:cnLoginQueue.Enqueue($softFail)
+        $global:cnLoginCalls = 0
+
+        Assert-Equal (Invoke-CnEnsure -Cfg $cfgBase) 1
+        Assert-Equal $global:cnLoginCalls 3
+    }
+
+    It '重试之间会等 retryDelaySec，等待次数是尝试次数减一' {
+        $global:cnGameHit = $null
+        $global:cnOnlineQueue.Enqueue($offline)
+        $global:cnOnlineQueue.Enqueue($offline)
+        $global:cnOnlineQueue.Enqueue($offline)
+        $global:cnLoginQueue.Enqueue($softFail)
+        $global:cnLoginQueue.Enqueue($softFail)
+        $global:cnLoginQueue.Enqueue($softFail)
+        $global:cnSleepCalls = 0
+
+        Assert-Equal (Invoke-CnEnsure -Cfg $cfgBase) 1
+        Assert-Equal $global:cnSleepCalls 2        # 中间等 2 次，最后一次失败后不再等
+    }
+}

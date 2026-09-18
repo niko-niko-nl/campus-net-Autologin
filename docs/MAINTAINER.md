@@ -22,7 +22,7 @@ tools\
 build\                   可选的 GUI 安装器（本地编译，不随仓库分发）
   Setup.cs  build.ps1
 tests\
-  CampusNet.Tests.ps1    单元测试（40 项：配置 / 联网判定 / RSA / 门户地址抓取 / 登录流程）
+  CampusNet.Tests.ps1    单元测试（44 项：配置 / 联网判定 / RSA / 门户地址抓取 / 登录流程 / 主链路）
   GameGuardVbs.Tests.ps1 run-hidden.vbs 第一层游戏守护的 smoke 测试
   Assertions.ps1         跟 Pester 版本无关的断言助手
   Run-Tests.ps1          测试入口
@@ -121,6 +121,8 @@ CI 每次 push 和 PR 都会跑这些，步骤写在 `.github\workflows\ci.yml` 
 还有几个已经踩过的坑：
 
 `Mock` 的 body 里只写字面量，别引用外层变量或外层函数。两个版本下 mock 执行时的作用域不完全一样，引用外层东西容易踩空。要改配置就在 `It` 里用 `$cfgBase.PSObject.Copy()` 派生一份再改字段。
+
+需要「第几次调用返回什么」这种序列时，用 `$global:` 传状态（`Invoke-CnEnsure` 那组测试就是 `$global:cnOnlineQueue` 这种 `System.Collections.Queue`，mock 里 `Dequeue`，`It` 里 `Enqueue`）。`$global:` 在任何作用域都拿得到，普通变量不保证。记得在 `AfterAll` 里 `Remove-Variable -Scope Global` 清掉，别漏给下一个测试文件。
 
 测试里别去取返回对象上可能不存在的属性。`CampusNet.ps1` 开头有 `Set-StrictMode -Version 2.0`，dot-source 之后对测试作用域同样生效，取一个不存在的属性会直接抛 `PropertyNotFoundException`。（这条不是纯测试问题：补 `Invoke-CnLogin` 单测时正是它暴露出主脚本里 `$pageInfo.validCodeUrl` 的真实 bug —— 门户不返回这个字段时整个登录流程会以「运行错误」结束。已改成走 `Get-JsonValue`。）
 
