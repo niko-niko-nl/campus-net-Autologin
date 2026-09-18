@@ -7,8 +7,9 @@
 #    3. RSA 实现回归（离线参考实现，40 个向量 + 空串 + 非 ASCII 拒绝）
 #    4. Pester 单元测试（配置默认值、联网判定、名单归一化、双重编码）
 #
-#  全部跑在 windows-latest 上，用系统自带的 Windows PowerShell 5.1 +
-#  内置的 Pester 3.4.0，和用户机器上的环境一致。
+#  全部跑在 windows-latest 上，用系统自带的 Windows PowerShell 5.1。
+#  ⚠️ runner 自带的 Pester 是 5.x，用户机器上是系统自带的 3.4.0 —— 两版断言
+#  语法互斥，所以测试必须写成版本无关的（原因见 docs/MAINTAINER.md）。
 #  Node.js 由 actions/setup-node 提供（RSA 参考实现需要它）。
 # =============================================================================
 name: CI
