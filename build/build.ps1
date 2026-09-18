@@ -33,11 +33,14 @@ $payloadFiles = @(
     'run.bat',
     'run-hidden.vbs',
     'LICENSE',
+    'gameguard.default.txt',
     'lib\SrunRsa.ps1',
     'README.md',
     'tools\fix-encoding.ps1',
     'tools\test-rsa.ps1',
+    'tools\rsa_ref.js',
     'tools\gameguard-check.ps1',
+    'tools\make-icon.ps1',
     'tools\verify-rsa.js'
 )
 

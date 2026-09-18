@@ -1,4 +1,4 @@
-// ===========================================================================
+﻿// ===========================================================================
 //  CampusNet-Setup.exe  —— 校园网自动登录 一键配置程序
 //
 //  单文件自解压 + 图形界面。双击后：
@@ -8,8 +8,10 @@
 //    4. 立刻认证一次
 //
 //  命令行（便于自动化/自测，普通用户直接双击即可）：
-//    --install --user U --pass P [--service S] [--interval N]
-//    --ensure | --status | --uninstall [--purge] | --selftest | --extract-only
+//    --install --user U --pass-stdin [--service S] [--interval N]
+//        （密码从 stdin 读一行；故意不提供 --pass —— 命令行参数会被同机
+//          其他用户在进程列表里看到）
+//    --ensure | --status | --gamecheck | --uninstall [--purge] | --selftest | --extract-only
 // ===========================================================================
 using System;
 using System.Collections.Generic;
@@ -19,6 +21,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace CampusNetSetup
@@ -257,9 +260,14 @@ namespace CampusNetSetup
                 psi.CreateNoWindow = true;
                 using (Process p = Process.Start(psi))
                 {
-                    string xml = p.StandardOutput.ReadToEnd();
-                    p.StandardError.ReadToEnd();
+                    // 同样要并发读，避免 stderr 写满导致死锁
+                    Task<string> outTask = p.StandardOutput.ReadToEndAsync();
+                    Task<string> errTask = p.StandardError.ReadToEndAsync();
                     p.WaitForExit(8000);
+                    string xml = "";
+                    try { if (outTask.Wait(2000)) xml = outTask.Result ?? ""; } catch { }
+                    try { errTask.Wait(2000); } catch { }
+
                     Match m = Regex.Match(xml, "<Interval>PT(\\d+)M</Interval>");
                     if (m.Success)
                     {
@@ -273,18 +281,32 @@ namespace CampusNetSetup
         }
 
         // ---- 默认游戏/反作弊进程名单 ----
-        // 说明：这里只放「游戏启动时才出现」的进程。像 ACE-Tray 那种常驻进程
-        // 故意不列入，否则守护会一直生效、自动登录等于被关掉。
-        public static readonly string[] DefaultGames = new string[] {
-            "SGuard64", "SGuardSvc64", "ACE-Guard Client", "ACE-BASE",
-            "valorant", "cs2", "csgo", "dota2",
-            "LeagueClient", "LeagueClientUx",
-            "r5apex", "r5apex_dx12",
-            "TslGame", "NarakaBladepoint",
-            "GenshinImpact", "YuanShen", "StarRail",
-            "Overwatch", "RainbowSix", "RainbowSixSiege",
-            "RobloxPlayerBeta", "GTA5", "RDR2"
+        // 单一数据源：随程序释放的 gameguard.default.txt（install.ps1 读同一份）。
+        // 以前这里和 install.ps1 各写一份，加了游戏就要改两处，容易漂移。
+        private static readonly string[] FallbackGames = new string[] {
+            "SGuard64", "SGuardSvc64", "valorant", "cs2", "LeagueClient", "TslGame"
         };
+
+        public static string[] GetDefaultGames()
+        {
+            try
+            {
+                string f = Path.Combine(Root, "gameguard.default.txt");
+                if (File.Exists(f))
+                {
+                    List<string> list = new List<string>();
+                    foreach (string raw in File.ReadAllLines(f, Encoding.UTF8))
+                    {
+                        string t = raw.Trim();
+                        if (t.Length == 0 || t.StartsWith("#")) continue;
+                        list.Add(t);
+                    }
+                    if (list.Count > 0) return list.ToArray();
+                }
+            }
+            catch { }
+            return FallbackGames;
+        }
 
         // ---- 调用 PowerShell 脚本（输出经临时文件回传，避免编码问题）----
         public static int RunScript(string scriptPath, string extraArgs, out string output, int timeoutMs)
@@ -316,14 +338,23 @@ namespace CampusNetSetup
 
                 using (Process p = Process.Start(psi))
                 {
-                    p.StandardOutput.ReadToEnd();
-                    p.StandardError.ReadToEnd();
+                    // 必须并发读两个管道。经典写法「先 ReadToEnd(stdout) 再 ReadToEnd(stderr)」
+                    // 会在子进程把 stderr 缓冲区（默认 4KB）写满时死锁：
+                    // 子进程阻塞在写 stderr，而我们在等 stdout 结束，双方互等。
+                    Task<string> outTask = p.StandardOutput.ReadToEndAsync();
+                    Task<string> errTask = p.StandardError.ReadToEndAsync();
+
                     if (!p.WaitForExit(timeoutMs))
                     {
                         try { p.Kill(); } catch { }
                         output = "（超时 " + (timeoutMs / 1000) + " 秒，已终止）\r\n";
                         return -9;
                     }
+
+                    // 进程已退出，这里只是把管道排空，不会阻塞太久
+                    try { outTask.Wait(2000); } catch { }
+                    try { errTask.Wait(2000); } catch { }
+
                     if (File.Exists(outFile))
                     {
                         output = File.ReadAllText(outFile, Encoding.UTF8);
@@ -447,7 +478,7 @@ namespace CampusNetSetup
             _txtGames.Location = new Point(146, 254);
             _txtGames.Size = new Size(304, 50);
             _txtGames.Font = new Font("Consolas", 8.5F);
-            _txtGames.Text = string.Join(", ", App.DefaultGames);
+            _txtGames.Text = string.Join(", ", App.GetDefaultGames());
             Controls.Add(_txtGames);
 
             Label ghint = new Label();
@@ -864,12 +895,28 @@ namespace CampusNetSetup
                 {
                     App.Extract();
                     string user = ArgValue(args, "--user", "");
-                    string pass = ArgValue(args, "--pass", "");
                     string service = ArgValue(args, "--service", "");
                     int interval = 5;
                     int.TryParse(ArgValue(args, "--interval", "5"), out interval);
                     if (interval < 1) interval = 5;
                     if (user.Length == 0) { Console.Error.WriteLine("缺少 --user"); return 2; }
+
+                    // 密码不从命令行取。命令行参数会出现在进程列表里（任务管理器、
+                    // Get-CimInstance Win32_Process 都能看到），同一台机器上其他用户
+                    // 就能读到明文密码。改成从 stdin 读一行。
+                    // 图形界面那条路径本来就不经命令行，不受影响。
+                    string pass = "";
+                    if (HasFlag(args, "--pass-stdin"))
+                    {
+                        pass = Console.ReadLine() ?? "";
+                        pass = pass.TrimEnd('\r', '\n');
+                    }
+                    else if (ArgValue(args, "--pass", null) != null)
+                    {
+                        Console.Error.WriteLine("--pass 已移除：明文密码走命令行会被同机其他用户看到。");
+                        Console.Error.WriteLine("请改用：echo 你的密码 | CampusNet-Setup.exe --install --user X --pass-stdin");
+                        return 2;
+                    }
 
                     // 游戏守护：默认启用 + 默认名单，可用 --noguard 关闭，--games "a,b,c" 覆盖名单
                     bool guard = !HasFlag(args, "--noguard");
@@ -888,7 +935,7 @@ namespace CampusNetSetup
                     else
                     {
                         string[] existing = App.ReadExistingGames();
-                        games = existing ?? App.DefaultGames;
+                        games = existing ?? App.GetDefaultGames();
                     }
 
                     App.WriteConfig(user, pass, service, App.HasConfig, guard, games);
@@ -909,7 +956,7 @@ namespace CampusNetSetup
                 if (HasFlag(args, "--gamecheck"))
                 {
                     bool guard = App.ReadExistingGuardEnabled();
-                    string[] games = App.ReadExistingGames() ?? App.DefaultGames;
+                    string[] games = App.ReadExistingGames() ?? App.GetDefaultGames();
                     Console.WriteLine("游戏守护      : " + (guard ? "已启用" : "已关闭（不会拦截）"));
                     Console.WriteLine("监控进程数    : " + games.Length);
                     List<string> hits = new List<string>();
@@ -954,8 +1001,7 @@ namespace CampusNetSetup
                     return c;
                 }
 
-                Console.Error.WriteLine("未知参数。可用：--install --ensure --status --gamecheck --uninstall --selftest --extract-only");
-                return 2;
+                Console.Error.WriteLine("未知参数。可用：--install --ensure --status --gamecheck --uninstall --selftest --extract-only");                return 2;
             }
             catch (Exception ex)
             {

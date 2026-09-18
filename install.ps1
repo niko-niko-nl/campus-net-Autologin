@@ -51,18 +51,46 @@ param(
     [switch]$NoShortcut
 )
 
-# 游戏守护默认名单：只放「游戏启动时才出现」的进程。
-# 常驻进程（如腾讯 ACE-Tray）故意不列入，否则守护会一直生效、自动登录等于被关掉。
-$DefaultGameProcesses = @(
-    'SGuard64', 'SGuardSvc64', 'ACE-Guard Client', 'ACE-BASE',
-    'valorant', 'cs2', 'csgo', 'dota2',
-    'LeagueClient', 'LeagueClientUx',
-    'r5apex', 'r5apex_dx12',
-    'TslGame', 'NarakaBladepoint',
-    'GenshinImpact', 'YuanShen', 'StarRail',
-    'Overwatch', 'RainbowSix', 'RainbowSixSiege',
-    'RobloxPlayerBeta', 'GTA5', 'RDR2'
-)
+# ---------------------------------------------------------------------------
+#  游戏守护默认名单
+#
+#  单一数据源：gameguard.default.txt（仓库根目录，install.ps1 和 build\Setup.cs
+#  都读它）。以前这里和 Setup.cs 各写了一份，容易漂移。
+#  文件缺失时用下面这份最小兜底，保证脚本单独拿出来也能跑。
+# ---------------------------------------------------------------------------
+function Get-DefaultGameProcesses {
+    param(
+        # 优先在这些目录里找 gameguard.default.txt
+        [string[]]$SearchDirs
+    )
+
+    # 注意：不能用 $MyInvocation.MyCommand.Path —— 在函数内部它指向函数自己，
+    # 不是脚本文件，算出来的目录是错的（踩过）。用 $PSScriptRoot，它始终是
+    # 本脚本所在的目录。
+    $dirs = New-Object System.Collections.Generic.List[string]
+    foreach ($d in @($SearchDirs)) {
+        if ($d) { $dirs.Add($d) }
+    }
+    if ($PSScriptRoot) { $dirs.Add($PSScriptRoot) }
+
+    foreach ($d in $dirs) {
+        $f = Join-Path $d 'gameguard.default.txt'
+        if (-not (Test-Path -LiteralPath $f)) { continue }
+        $list = New-Object System.Collections.Generic.List[string]
+        foreach ($line in (Get-Content -LiteralPath $f -Encoding UTF8)) {
+            $t = $line.Trim()
+            if (-not $t) { continue }
+            if ($t.StartsWith('#')) { continue }
+            $list.Add($t)
+        }
+        if ($list.Count -gt 0) { return $list.ToArray() }
+    }
+
+    # 兜底：名单文件缺失时仍能跑（比如有人只把 install.ps1 单独拿走）
+    return @('SGuard64', 'SGuardSvc64', 'valorant', 'cs2', 'LeagueClient', 'TslGame')
+}
+
+$DefaultGameProcesses = @(Get-DefaultGameProcesses -SearchDirs @($PSScriptRoot))
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
@@ -151,8 +179,8 @@ if (-not $NoDeploy) {
         Say "正在安装到：$InstallDir"
         $deployFiles = @(
             'CampusNet.ps1', 'install.ps1', 'install.bat', 'uninstall.ps1', 'uninstall.bat', 'run.bat',
-            'run-hidden.vbs', 'README.md', 'LICENSE', 'lib\SrunRsa.ps1',
-            'tools\gameguard-check.ps1', 'tools\test-rsa.ps1', 'tools\verify-rsa.js',
+            'run-hidden.vbs', 'README.md', 'LICENSE', 'gameguard.default.txt', 'lib\SrunRsa.ps1',
+            'tools\gameguard-check.ps1', 'tools\test-rsa.ps1', 'tools\rsa_ref.js', 'tools\verify-rsa.js',
             'tools\fix-encoding.ps1', 'tools\make-icon.ps1'
         )
         $copied = 0

@@ -223,7 +223,16 @@ function Update-CnGameGuardList {
         [void]$sb.AppendLine('# 游戏守护名单：VBS 启动器会读这个文件，命中任一进程名就不启动 PowerShell。')
         [void]$sb.AppendLine('# 由 CampusNet.ps1 / 安装程序自动生成，不要手改；改 config.json 里的 gameProcesses。')
         foreach ($w in ($watch | Sort-Object -Unique)) { [void]$sb.AppendLine($w) }
-        [System.IO.File]::WriteAllText($lstPath, $sb.ToString(), (New-Object System.Text.UTF8Encoding($false)))
+        $newText = $sb.ToString()
+
+        # 内容没变就不要写。这个函数每次运行都会调用（包括 5 分钟一次的定时任务
+        # 和 -Mode status），无脑重写等于每 5 分钟改一次文件的修改时间。
+        if (Test-Path -LiteralPath $lstPath) {
+            $old = [System.IO.File]::ReadAllText($lstPath, [System.Text.Encoding]::UTF8)
+            if ($old -ceq $newText) { return }
+        }
+
+        [System.IO.File]::WriteAllText($lstPath, $newText, (New-Object System.Text.UTF8Encoding($false)))
     } catch { }
 }
 
@@ -680,7 +689,13 @@ function Invoke-CnTest {
 
 # ==========================================================================
 #  入口
+#
+#  注意这个 if：被 dot-source 时（InvocationName 是 "."）只加载函数定义，
+#  不执行主流程。tests\CampusNet.Tests.ps1 靠这个拿到函数做单元测试，
+#  否则一 source 就会真的去登录、甚至 exit 掉测试进程。
 # ==========================================================================
+if ($MyInvocation.InvocationName -eq '.') { return }
+
 try {
     . (Join-Path $script:ScriptDir 'lib\SrunRsa.ps1')
     $cfg = Get-CnConfig -Path $ConfigPath

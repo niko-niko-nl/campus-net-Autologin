@@ -85,10 +85,16 @@ if (Test-Path -LiteralPath $lnk) {
 
 # ---- 5. 可选：整个程序目录 ----
 if ($Purge) {
-    # 脚本自己就在待删目录里，交给一个后台进程稍后删除，避免删到一半失败
-    $cmd = "Start-Sleep -Milliseconds 900; Remove-Item -LiteralPath '$root' -Recurse -Force -ErrorAction SilentlyContinue"
-    Start-Process -FilePath 'powershell.exe' `
-        -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-Command', $cmd) -WindowStyle Hidden | Out-Null
+    # 脚本自己就在待删目录里，交给一个后台进程稍后删除，避免删到一半失败。
+    #
+    # 路径不走字符串拼接 —— 目录名里只要有个单引号，拼进 -Command 就会把脚本
+    # 撕开（轻则删不掉，重则等于把路径当代码执行）。改成用环境变量传：
+    # 子进程继承环境变量，路径怎么长什么样都不会被解析。
+    $env:CN_PURGE_DIR = $root
+    Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @(
+        '-NoProfile', '-WindowStyle', 'Hidden', '-Command',
+        'Start-Sleep -Milliseconds 900; Remove-Item -LiteralPath $env:CN_PURGE_DIR -Recurse -Force -ErrorAction SilentlyContinue'
+    ) | Out-Null
 
     Write-Host "[OK] 已安排删除整个程序目录：$root（后台执行，约 1 秒完成）" -ForegroundColor Green
 } else {

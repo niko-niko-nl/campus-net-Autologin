@@ -1,0 +1,39 @@
+# =============================================================================
+#  gameguard.default.txt —— 游戏守护的默认进程名单（单一数据源）
+# =============================================================================
+#  install.ps1 和 build\Setup.cs 都读这个文件，避免两处名单各写一份而漂移。
+#
+#  格式：一行一个进程名；忽略空行和以 # 开头的行；大小写不敏感；
+#        带不带 .exe 后缀都行（匹配时会去掉）。
+#
+#  ⚠️ 只放「游戏启动时才出现」的进程。
+#     常驻进程绝不能列进来 —— 比如腾讯 ACE 的托盘 ACE-Tray 一开机就在跑，
+#     列进去会让守护永远生效、自动登录等于被关掉。
+# =============================================================================
+
+# --- 腾讯 ACE 反作弊（按需加载，游戏启动时才出现）---
+SGuard64
+SGuardSvc64
+ACE-Guard Client
+ACE-BASE
+
+# --- 常见游戏本体 ---
+valorant
+cs2
+csgo
+dota2
+LeagueClient
+LeagueClientUx
+r5apex
+r5apex_dx12
+TslGame
+NarakaBladepoint
+GenshinImpact
+YuanShen
+StarRail
+Overwatch
+RainbowSix
+RainbowSixSiege
+RobloxPlayerBeta
+GTA5
+RDR2

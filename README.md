@@ -181,17 +181,26 @@
 
 ### 怎么确认实现没写错
 
-`tools\test-rsa.ps1` 用**门户原始的 `security.js`** 当标准答案，交叉验证 PowerShell 实现是否逐字节一致：
+`tools\test-rsa.ps1` 分两层校验，**默认那层是离线、开箱即跑的**：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\CampusNet\tools\test-rsa.ps1"
 ```
 
-7 个用例全部 `[OK]` 才算没问题。需要 Node.js。
+| 层 | 标准答案 | 需要什么 |
+|---|---|---|
+| **第 1 层（默认）** | `tools\rsa_ref.js` —— 本仓库自带的 ohdave 等价实现 | 只要 Node.js |
+| 第 2 层（可选） | 门户原始的 `security.js` | 把该文件放到 `tools\` 下即可自动启用 |
 
-值得说明的是：默认用的是**通用的 1024 位测试模数**，而不是本校的公钥。因为交叉验证只需要两边用同一个模数，用随机模数反而覆盖面更广——上面那个补位 bug 就是换了模数才暴露出来的（用本校公钥时 7 个用例恰好都没触发，概率约 32%）。
+第 1 层覆盖 **40 个向量**（含空串、特殊符号、以及 `chunkSize=126` 的分块边界 125/126/127/251/252/253/378/379），全部通过才算没写坏；并会断言非 ASCII 输入被明确拒绝。
 
-想用本校真实公钥测，加 `-Modulus <256位十六进制>`；公钥可以从 `CampusNet.ps1 -Mode test` 的输出里拿。
+第 2 层是拿来验证"参考实现本身没写偏"的：把两个实现放进同一个 Node 进程直接比对，7 个向量全等才算过。
+
+> 本来只依赖门户的 `security.js`，但那文件是本仓库不分发的第三方文件，结果 clone 下来根本跑不起来。现在默认那层完全不依赖它。
+
+**关于测试模数**：默认用**通用的 1024 位随机模数**，而不是本校公钥。因为等价性验证只需要两边用同一个模数，随机模数覆盖面反而更广——曾经有个十六进制补位的 bug，就是换了模数才暴露出来的（用本校公钥时 7 个用例恰好都没触发，概率约 32%）。想换成真实公钥：`-Modulus <256位十六进制>`，公钥可以从 `CampusNet.ps1 -Mode test` 的输出里拿。
+
+**已知边界：只支持 ASCII**。非 ASCII（中文等）输入时，门户原版 / `rsa_ref.js` / PowerShell 实现**三方两两都不同**——因为 ohdave 原版把数据放进 16bit 数字槽、乘法时按 `& 0xFFFF` 截断，`charCodeAt` 返回的 >255 的值进到那里就是未定义行为。与其输出一个"看起来对"的密文，`rsa_ref.js` 直接抛错。对本校无影响（密码是 6 位数字，且门户 `passwordEncrypt=false` 根本不走 RSA）。
 
 ---
 
@@ -386,18 +395,22 @@ Remove-Item -Recurse -Force "$env:LOCALAPPDATA\CampusNet"
 
 ```
 CampusNet.ps1            主脚本
-install.ps1 / .bat       安装
+install.ps1 / .bat       安装（自部署到 %LOCALAPPDATA%\CampusNet）
 uninstall.ps1 / .bat     卸载
 run.bat                  立刻登录一次
 run-hidden.vbs           计划任务入口（静默 + 第一层游戏守护）
 lib\SrunRsa.ps1          深澜密码加密
 tools\
   gameguard-check.ps1    游戏守护自检
-  test-rsa.ps1           RSA 实现交叉验证（需 Node.js）
-  verify-rsa.js          用门户 security.js 生成标准答案
+  test-rsa.ps1           RSA 实现回归测试（默认离线，需 Node.js）
+  rsa_ref.js             ohdave RSA 等价参考实现（离线对拍的"标准答案"）
+  verify-rsa.js          用门户 security.js 生成标准答案（可选第 2 层）
+  make-icon.ps1          生成 app.ico（GUI 图标 / 桌面快捷方式图标共用）
   fix-encoding.ps1       批量给 .ps1 补 UTF-8 BOM
 build\                   可选的 GUI 安装器（本地编译，不随仓库分发）
-  Setup.cs  build.ps1  make-icon.ps1
+  Setup.cs  build.ps1
+tests\
+  CampusNet.Tests.ps1    Pester 单元测试
 ```
 
 ### ⚠️ 改代码必读：UTF-8 BOM
@@ -450,6 +463,27 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1
 - 脚本只访问校园网门户和你配置的探测地址，**没有其他外发流量**。
 - 代码全部可读：无混淆、无 base64 隐藏载荷、不注入进程、不挂钩子、不装驱动、不写注册表。
 - **`.gitignore` 已排除** `config.json`、`login.log`、`gameguard.lst`，不会误提交个人数据。
+
+### ⚠️ "仅保存在本机" 指的是静态存储，不是传输
+
+DPAPI 保证的是**磁盘上不落明文**。但**传输**是另一回事：
+
+本校门户的 `pageInfo` 返回 `passwordEncrypt: false`，意味着登录请求里的 `password` 字段是**明文**，而且走的是 **http（未加密）**：
+
+```
+POST http://10.130.128.9/eportal/InterFace.do?method=login
+     password=<明文>&...
+```
+
+**这和你在浏览器里登录走的是同一条路**——门户自己就是这么设计的，脚本没有让它变得更不安全。但在校园网内网抓包的人（同一局域网、或控制了 AP/网关的人）理论上能看到密码。
+
+**能做什么**：
+
+- 校园网门户本身就在内网，校外访问不到，实际暴露面就是"同网段的人"。
+- 如果学校允许，在自助服务系统里**改一个和身份证号无关的独立密码**——这样即便密码泄露，也和你的身份证信息脱钩。
+- 真在意的话，就别用这类自动登录工具，每次手动在浏览器里输。
+
+> 有些学校会返回 `passwordEncrypt: true`，那时脚本会按 ohdave RSA 加密后再提交（见 [工作原理](#工作原理协议细节)）。本校目前不是这种。
 
 ## License
 

@@ -13,6 +13,16 @@
 #     3. chunkSize = 2 * biHighIndex(n)，即 modulus 的 16bit 位数减一，
 #        1024bit 密钥 => 64 位 => chunkSize = 126（不是 128）
 #     4. 密文输出 16 进制，每个 16bit 位固定补足 4 位；多块之间用空格连接
+#     5. 空串输入返回空串（原版的补零循环在 a 为空时条件直接为假，不产生任何块）
+#
+#  ⚠️ 已知边界：只对码元 <= 255 的输入与门户逐字节一致
+#     实测「门户 security.js 原版 / tools\rsa_ref.js / 本文件」三方：
+#       - 对小写 ASCII、数字、常见符号：完全一致
+#       - 对中文等非 ASCII：三方两两都不同
+#     原因是 ohdave 原版把数据放进 16bit 数字槽，乘法时对每位做 & 0xFFFF 截断，
+#     而 charCodeAt 对中文返回 >255 的值 —— 原版在那里本身就是未定义行为。
+#     本文件采取的做法是 & 0xFF（见下面 $v -band 0xFF），是"其中一个"合理取值，
+#     但确实不是逐字节复刻。对本校无影响：密码是 6 位数字，且门户 passwordEncrypt=false。
 # =====================================================================
 
 Set-StrictMode -Version 2.0
@@ -60,9 +70,12 @@ function ConvertTo-SrunRsa {
     for ($i = 0; $i -lt $PlainText.Length; $i++) { $units[$i] = [int][char]$PlainText[$i] }
 
     # ---- 补齐到 chunkSize 的整数倍（JS: while (a.length % chunkSize != 0) a[i++] = 0）----
+    # 空串时 JS 的循环条件 0 % chunkSize == 0 直接为假，一个块都不产生，最终返回空串。
+    # 所以这里不能把空输入兜底成一个空块（那会得到 "0000"，与门户不一致）。
     $rem = $PlainText.Length % $chunkSize
     $total = if ($rem -eq 0) { $PlainText.Length } else { $PlainText.Length + ($chunkSize - $rem) }
-    if ($total -eq 0) { $total = $chunkSize }
+
+    if ($total -eq 0) { return '' }
 
     $blocks = New-Object System.Collections.Generic.List[string]
 
