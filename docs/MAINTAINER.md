@@ -22,7 +22,7 @@ tools\
 build\                   可选的 GUI 安装器（本地编译，不随仓库分发）
   Setup.cs  build.ps1
 tests\
-  CampusNet.Tests.ps1    单元测试（44 项：配置 / 联网判定 / RSA / 门户地址抓取 / 登录流程 / 主链路）
+  CampusNet.Tests.ps1    单元测试（46 项：配置 / 联网判定 / RSA / 门户地址抓取 / 登录流程 / 主链路 / 与真实登录的接缝）
   GameGuardVbs.Tests.ps1 run-hidden.vbs 第一层游戏守护的 smoke 测试
   Assertions.ps1         跟 Pester 版本无关的断言助手
   Run-Tests.ps1          测试入口

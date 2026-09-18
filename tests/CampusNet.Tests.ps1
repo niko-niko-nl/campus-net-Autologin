@@ -613,3 +613,73 @@ Describe 'Invoke-CnEnsure 主链路' {
         Assert-Equal $global:cnSleepCalls 2        # 中间等 2 次，最后一次失败后不再等
     }
 }
+
+Describe 'ensure 到 login 的接缝（跑真实登录逻辑）' {
+
+    # 上面那组把 Invoke-CnLogin 整个 mock 掉了，只测 Invoke-CnEnsure 自己的
+    # 循环和返回值。这一组反过来：只挡网络层，让真实的 Invoke-CnLogin 在
+    # ensure 的循环里跑一遍。差别很实在 —— pageInfo 故意不给 validCodeUrl
+    # 字段，直读属性的写法会在这里抛 PropertyNotFoundException 穿出重试循环，
+    # 而 mock 掉 Invoke-CnLogin 的那组永远发现不了。
+
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'CampusNet.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'lib\SrunRsa.ps1')
+        . (Join-Path $PSScriptRoot 'Assertions.ps1')
+        Mock Write-CnLog { }
+        Mock Start-Sleep { }
+        Mock Test-CnGameRunning { $null }
+
+        $global:cnSeamQueue = New-Object System.Collections.Queue
+
+        Mock Test-CnOnline {
+            if ($global:cnSeamQueue.Count -gt 0) { return $global:cnSeamQueue.Dequeue() }
+            return [pscustomobject]@{ Online = $false; PortalUrl = 'http://10.0.0.1/eportal/index.jsp?wlanuserip=abc&mac=112233445566' }
+        }
+
+        Mock Invoke-CnHttp {
+            if ($Url -like '*pageInfo*') {
+                # 就这么多字段，没有 validCodeUrl
+                return [pscustomobject]@{ StatusCode = 200; Location = $null; FinalUrl = ''; Body = '{"passwordEncrypt":"false"}' }
+            }
+            [pscustomobject]@{ StatusCode = 200; Location = $null; FinalUrl = ''; Body = '{"result":"success","userIndex":"u-seam","keepaliveInterval":60}' }
+        }
+
+        $cfg = [pscustomobject]@{
+            userId                      = 'student1'
+            password                    = 'pw123456'
+            passwordEncrypted           = ''
+            service                     = ''
+            portalHost                  = '10.0.0.1'
+            checkUrls                   = @('http://probe.invalid/generate_204')
+            logFile                     = ''
+            retryCount                  = 3
+            retryDelaySec               = 0
+            timeoutSec                  = 5
+            treatAlreadyOnlineAsSuccess = $true
+            gameGuard                   = $false
+            gameProcesses               = @()
+        }
+
+        # 只有「拿不到门户地址」那条用例会走到它（第一条用例是把地址直接传进
+        # Invoke-CnLogin 的）。显式挡掉，免得绕到 HTTP 层去猜。
+        Mock Get-CnPortalUrl { $null }
+    }
+
+    AfterAll {
+        Remove-Variable -Name cnSeamQueue -Scope Global -ErrorAction SilentlyContinue
+    }
+
+    It '掉线后在 ensure 循环里完成一次真实登录 => 返回 0' {
+        $global:cnSeamQueue.Enqueue([pscustomobject]@{ Online = $false; PortalUrl = 'http://10.0.0.1/eportal/index.jsp?wlanuserip=abc&mac=112233445566' })
+        $global:cnSeamQueue.Enqueue([pscustomobject]@{ Online = $true;  PortalUrl = $null })
+
+        Assert-Equal (Invoke-CnEnsure -Cfg $cfg) 0
+    }
+
+    It '接缝上拿不到门户地址 => 真实登录返回 Fatal，ensure 立刻返回 2' {
+        $global:cnSeamQueue.Enqueue([pscustomobject]@{ Online = $false; PortalUrl = $null })
+
+        Assert-Equal (Invoke-CnEnsure -Cfg $cfg) 2
+    }
+}
