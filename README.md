@@ -410,12 +410,47 @@ tools\
 build\                   可选的 GUI 安装器（本地编译，不随仓库分发）
   Setup.cs  build.ps1
 tests\
-  CampusNet.Tests.ps1    Pester 单元测试
+  CampusNet.Tests.ps1    单元测试（20 项）
+  Assertions.ps1         版本无关的断言助手
+  Run-Tests.ps1          测试入口
+.github\workflows\ci.yml GitHub Actions：BOM / 语法 / RSA 回归 / 单测
 ```
+
+### 跑测试
+
+```powershell
+# 单元测试
+powershell -ExecutionPolicy Bypass -File .\tests\Run-Tests.ps1
+
+# RSA 回归（需要 Node.js）
+powershell -ExecutionPolicy Bypass -File .\tools\test-rsa.ps1
+```
+
+CI 在每次 push / PR 时自动跑这四项，配置见 `.github\workflows\ci.yml`。
+
+### ⚠️ 写测试必读：Pester 版本陷阱
+
+**断言不要用 Pester 的 `Should`。** 实测两个主流版本语法互斥：
+
+| | `Should Be`（无横线） | `Should -Be`（有横线） |
+|---|---|---|
+| Pester **3.4.0**（Windows 10/11 自带） | ✅ | ❌ `'-Be' is not a valid Should operator` |
+| Pester **5.x**（GitHub Actions runner 自带） | ❌ `Legacy Should syntax is not supported` | ✅ |
+
+没有两边通吃的写法。所以 `tests\Assertions.ps1` 提供 `Assert-Equal` / `Assert-True` /
+`Assert-Match` / `Assert-Throws` 等助手 —— 失败就 `throw`，任何 Pester 版本都会把它记为失败。
+`Describe` / `It` / `BeforeAll` / `Mock` 这些结构在两边行为一致，照常用。
+
+还有两个 Pester 5 的坑（本文件已规避，别改回去）：
+
+- **被测函数必须在每个 `Describe` 的 `BeforeAll` 里 dot-source**，不能写在文件顶层。
+  Pester 5 的 `It` 运行在另一个作用域，顶层 dot-source 的函数在 `It` 里会
+  `CommandNotFoundException`。
+- **`Describe` 体里直接赋值的变量，`It` 里拿不到**，一律放 `BeforeAll`。
 
 ### ⚠️ 改代码必读：UTF-8 BOM
 
-**所有含中文的 `.ps1` / `.cs` 必须存成 UTF-8 with BOM。** Windows PowerShell 5.1 会把无 BOM 的文件按 ANSI/GBK 读，中文变乱码，甚至直接语法报错。
+**所有含中文的 `.ps1` / `.cs` 必须存成 UTF-8 with BOM。** Windows PowerShell 5.1 会把无 BOM 的文件按 ANSI/GBK 读，中文变乱码，甚至直接语法报错。CI 里有一步专门卡这个。
 
 改完跑一下：
 
